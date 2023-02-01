@@ -8,7 +8,7 @@ from typing import Union
 import requests
 import telegram
 from dotenv import load_dotenv
-from telegram.error import Unauthorized
+from telegram.error import TelegramError
 
 from exceptions import ConnectionError, EndpointStatusError
 
@@ -38,13 +38,9 @@ def check_tokens() -> bool:
 def send_message(bot: telegram.Bot, message: str) -> None:
     """Отправка сообщения."""
     try:
-        logging.debug('Начинаем отправку сообщения.')
         bot.send_message(TELEGRAM_CHAT_ID, message)
-    except Unauthorized:  # Добавил конкретный из ошибок телеграм
-        logging.critical('Ошибка авторизации, проверьте токены.')
-        sys.exit(1)
-    except Exception as err:  # Прочитал Built-in Exceptions,общий тут подходит
-        logging.error(f'Сообщение не отправлено. Ошибка {err}.', exc_info=True)
+    except TelegramError as err:
+        logging.error(f'Ошибка работы с Telegram: {err}', exc_info=True)
     else:
         logging.debug('Сообщение отправлено.')
 
@@ -61,10 +57,11 @@ def get_api_answer(timestamp: int) -> dict:
     except Exception as err:
         message = (f'При подключении к серверу произошла ошибка: {err}.'
                    f' Параметры запроса: {ENDPOINT} - {HEADERS} - {payload}')
-        raise ConnectionError(message)
+        raise ConnectionError(message) from err
     if not response.status_code == HTTPStatus.OK:
         message = (f'Получен неверный ответ от сервера: {response.status_code}'
-                   f'. Параметры запроса: {ENDPOINT} - {HEADERS} - {payload}.')
+                   f'. Параметры запроса: {ENDPOINT} - {HEADERS} - {payload}.'
+                   f' Текст ответа: {response.text}')
         raise EndpointStatusError(message)
     return response.json()
 
@@ -72,17 +69,13 @@ def get_api_answer(timestamp: int) -> dict:
 def check_response(response: Union[list, dict]) -> list:
     """Проверка ответа."""
     if not isinstance(response, dict):
-        message = 'Ответ API вернул не словарь.'
-        raise TypeError(message)
+        raise TypeError('Ответ API вернул не словарь.')
     if 'homeworks' not in response:
-        message = 'В ответе отсутствует ключ "homeworks".'
-        raise KeyError(message)
+        raise KeyError('В ответе отсутствует ключ "homeworks".')
     if 'current_date' not in response:
-        message = 'В ответе отсутствует ключ "current_date".'
-        raise KeyError(message)
+        raise KeyError('В ответе отсутствует ключ "current_date".')
     if not isinstance(response['homeworks'], list):
-        message = 'Ключ "homeworks" вернул не список.'
-        raise TypeError(message)
+        raise TypeError('Ключ "homeworks" вернул не список.')
     return response['homeworks']
 
 
@@ -91,14 +84,12 @@ def parse_status(homework: dict) -> str:
     homework_name = homework.get('homework_name')
     homework_status = homework.get('status')
     if not homework_name:
-        message = 'В ответе отсутствует имя работы.'
-        raise KeyError(message)
+        raise KeyError('В ответе отсутствует имя работы.')
     elif not homework_status:
-        message = 'В ответе отсутствует статус работы.'
-        raise KeyError(message)
+        raise KeyError('В ответе отсутствует статус работы.')
     if homework_status not in HOMEWORK_VERDICTS:
-        message = f'Статус работы {homework_name} отличается от заданного.'
-        raise KeyError(message)
+        raise KeyError(f'Статус работы {homework_name}'
+                       ' отличается от заданного.')
     verdict = HOMEWORK_VERDICTS[homework_status]
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
@@ -111,6 +102,8 @@ def main():
         sys.exit(message)
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
+    sent_messages = []
+    sent_errors = []
 
     while True:
         try:
@@ -119,14 +112,21 @@ def main():
             homeworks = check_response(response)
             if homeworks:
                 message = parse_status(homeworks[0])
+                logging.debug('Начинаем отправку сообщения.')
                 send_message(bot, message)
             else:
-                message = 'За запрошенный период домашних работ нет.'
+                message = 'Изменений в статусах проверки работы нет.'
                 logging.debug(message)
+                if message not in sent_messages:
+                    send_message(bot, message)
+                    sent_messages.append(message)
         except Exception as err:
-            message = f'Сбой в работе программы: {err.message}'
-            send_message(bot, message)
+            message = f'Сбой в работе программы: {err}'
             logging.error(message, exc_info=True)
+            if message not in sent_errors:
+                send_message(bot, message)
+                sent_errors.append(message)
+
         finally:
             time.sleep(RETRY_PERIOD)
 
