@@ -95,19 +95,6 @@ def parse_status(homework: dict) -> str:
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
-def send_unique_message(bot: telegram.Bot,
-                        message: str,
-                        sent_messages: list,
-                        debug: str) -> str:
-    """Проверка сообщения на уникальность перед отправкой в телеграмм."""
-    if message not in sent_messages:
-        send_message(bot, message)
-        sent_messages.append(message)
-        logging.debug(message)
-    else:
-        logging.debug(debug)
-
-
 def main():
     """Основная логика работы бота."""
     if not check_tokens():
@@ -116,8 +103,7 @@ def main():
         sys.exit(message)
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
-    sent_messages = []
-    prev_error = ''
+    last_message = ''
 
     while True:
         try:
@@ -126,17 +112,19 @@ def main():
             homeworks = check_response(response)
             if homeworks:
                 message = parse_status(homeworks[0])
-                debug = 'Изменений в статусах проверки работы нет.'
-                send_unique_message(bot, message, sent_messages, debug)
+                logging.debug('Отправляем сообщение')
             else:
                 message = 'Нет новых домашних работ.'
-                send_unique_message(bot, message, sent_messages, message)
+                logging.debug(message)
+            if message != last_message:
+                last_message = message
+                send_message(bot, message)
         except Exception as err:
             message = f'Сбой в работе программы: {err}'
             logging.error(message, exc_info=True)
-            if message != prev_error:
+            if message != last_message:
+                last_message = message
                 send_message(bot, message)
-                prev_error = message
         finally:
             time.sleep(RETRY_PERIOD)
 
